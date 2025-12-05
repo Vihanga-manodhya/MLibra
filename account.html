@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Libro - Modern Library System</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
+
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fa-solid fa-book-open text-indigo-600 text-2xl mr-3"></i>
+                    <span class="font-bold text-xl tracking-tight text-slate-900">Libro<span class="text-indigo-600">Sys</span></span>
+                </div>
+                <div class="flex items-center space-x-4" id="nav-actions">
+                    <!-- Dynamic Content will be injected here -->
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main id="app-container" class="flex-grow">
+        <!-- Views will be injected here -->
+        <div class="flex justify-center items-center h-[80vh]">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+        </div>
+    </main>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+    <!-- Firebase Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+        // --- Configuration ---
+        // We use a fallback strategy: 
+        // 1. Try the environment's config (ensures Preview works in the AI tool).
+        // 2. Fallback to the User's provided specific config.
+        const userProvidedConfig = {
+            apiKey: "AIzaSyChtnZ8X5auVg4tdDmT7DMcfPzPb0gRv28",
+            authDomain: "library-6f18c.firebaseapp.com",
+            projectId: "library-6f18c",
+            storageBucket: "library-6f18c.firebasestorage.app",
+            messagingSenderId: "339069400890",
+            appId: "1:339069400890:web:1f5ad7d63890bd4a42c203",
+            measurementId: "G-D7105C414V"
+        };
+
+        const firebaseConfig = (typeof __firebase_config !== 'undefined') 
+            ? JSON.parse(__firebase_config) 
+            : userProvidedConfig;
+
+        // --- Initialization ---
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // App State
+        let currentUser = null;
+        let books = [];
+        let unsubscribeBooks = null;
+
+        // --- DOM Elements ---
+        const appContainer = document.getElementById('app-container');
+        const navActions = document.getElementById('nav-actions');
+
+        // --- Authentication Observers ---
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            updateNavigation();
+            if (user) {
+                loadLibraryView();
+            } else {
+                loadAuthView();
+            }
+        });
+
+        // --- View Renderers ---
+
+        function updateNavigation() {
+            if (currentUser) {
+                navActions.innerHTML = `
+                    <span class="hidden md:inline text-sm text-slate-600 mr-2">Welcome, <span class="font-semibold text-slate-900">${currentUser.displayName || 'Reader'}</span></span>
+                    <button id="btn-logout" class="text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2 px-4 rounded-lg transition">
+                        Log Out
+                    </button>
+                `;
+                document.getElementById('btn-logout').addEventListener('click', handleLogout);
+            } else {
+                navActions.innerHTML = `
+                    <button onclick="document.getElementById('auth-toggle-btn').click()" class="text-sm text-indigo-600 font-semibold hover:text-indigo-800">
+                        Log In / Sign Up
+                    </button>
+                `;
+            }
+        }
+
+        function loadAuthView() {
+            // Clean up listeners if any
+            if (unsubscribeBooks) unsubscribeBooks();
+
+            appContainer.innerHTML = `
+                <div class="min-h-[calc(100vh-4rem)] flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-[url('https://images.unsplash.com/photo-1507842217121-9e9f1929c5f7?q=80&w=2070&auto=format&fit=crop')] bg-cover bg-center relative">
+                    <div class="absolute inset-0 bg-indigo-900/40 backdrop-blur-sm"></div>
+                    
+                    <div class="max-w-md w-full space-y-8 glass-panel p-8 rounded-2xl shadow-2xl relative z-10">
+                        <div class="text-center">
+                            <i class="fa-solid fa-book-open text-indigo-600 text-5xl mb-4"></i>
+                            <h2 class="text-3xl font-extrabold text-gray-900" id="auth-title">Sign in to Libro</h2>
+                            <p class="mt-2 text-sm text-gray-600" id="auth-subtitle">
+                                Or <button id="auth-toggle-btn" class="font-medium text-indigo-600 hover:text-indigo-500">create a new account</button>
+                            </p>
+                        </div>
+                        
+                        <form class="mt-8 space-y-6" id="auth-form">
+                            <input type="hidden" name="remember" value="true">
+                            <div class="rounded-md shadow-sm -space-y-px">
+                                <div id="name-field-container" class="hidden">
+                                    <label for="name" class="sr-only">Full Name</label>
+                                    <input id="name" name="name" type="text" class="appearance-none rounded-none relative block w-full px-3 py-3 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm" placeholder="Full Name">
+                                </div>
+                                <div>
+                                    <label for="email-address" class="sr-only">Email address</label>
+                                    <input id="email-address" name="email" type="email" autocomplete="email" required class="appearance-none rounded-none relative block w-full px-3 py-3 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm" placeholder="Email address">
+                                </div>
+                                <div>
+                                    <label for="password" class="sr-only">Password</label>
+                                    <input id="password" name="password" type="password" autocomplete="current-password" required class="appearance-none rounded-none relative block w-full px-3 py-3 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm" placeholder="Password">
+                                </div>
+                            </div>
+
+                            <div>
+                                <button type="submit" id="submit-btn" class="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all shadow-lg hover:shadow-indigo-500/30">
+                                    <span class="absolute left-0 inset-y-0 flex items-center pl-3">
+                                        <i class="fa-solid fa-lock text-indigo-500 group-hover:text-indigo-400"></i>
+                                    </span>
+                                    Sign in
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            // View State Logic
+            let isLogin = true;
+            const toggleBtn = document.getElementById('auth-toggle-btn');
+            const authTitle = document.getElementById('auth-title');
+            const authSubtitle = document.getElementById('auth-subtitle');
+            const submitBtn = document.getElementById('submit-btn');
+            const nameField = document.getElementById('name-field-container');
+            const emailInput = document.getElementById('email-address');
+            const passwordInput = document.getElementById('password'); // Fix rounded corners dynamically
+
+            toggleBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                isLogin = !isLogin;
+                
+                if (isLogin) {
+                    authTitle.textContent = 'Sign in to Libro';
+                    authSubtitle.innerHTML = `Or <button id="auth-toggle-btn-inner" class="font-medium text-indigo-600 hover:text-indigo-500">create a new account</button>`;
+                    submitBtn.innerHTML = `<span class="absolute left-0 inset-y-0 flex items-center pl-3"><i class="fa-solid fa-lock text-indigo-500 group-hover:text-indigo-400"></i></span>Sign in`;
+                    nameField.classList.add('hidden');
+                    emailInput.classList.add('rounded-t-md'); // Fix top corners
+                } else {
+                    authTitle.textContent = 'Create Account';
+                    authSubtitle.innerHTML = `Or <button id="auth-toggle-btn-inner" class="font-medium text-indigo-600 hover:text-indigo-500">sign in to existing account</button>`;
+                    submitBtn.innerHTML = `<span class="absolute left-0 inset-y-0 flex items-center pl-3"><i class="fa-solid fa-user-plus text-indigo-500 group-hover:text-indigo-400"></i></span>Sign up`;
+                    nameField.classList.remove('hidden');
+                    nameField.querySelector('input').classList.add('rounded-t-md');
+                    emailInput.classList.remove('rounded-t-md');
+                }
+                
+                // Re-attach listener to the new button inside innerHTML
+                document.getElementById('auth-toggle-btn-inner').addEventListener('click', (e) => toggleBtn.click());
+            });
+
+            document.getElementById('auth-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = document.getElementById('email-address').value;
+                const password = document.getElementById('password').value;
+                const name = document.getElementById('name').value;
+
+                const btn = document.getElementById('submit-btn');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Processing...';
+                btn.disabled = true;
+
+                try {
+                    if (isLogin) {
+                        await signInWithEmailAndPassword(auth, email, password);
+                        showToast('Welcome back!', 'success');
+                    } else {
+                        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                        await updateProfile(userCredential.user, { displayName: name });
+                        showToast('Account created successfully!', 'success');
+                        // Reload to catch the display name update in UI
+                        location.reload();
+                    }
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            });
+        }
+
+        function loadLibraryView() {
+            appContainer.innerHTML = `
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                    <div class="flex flex-col md:flex-row justify-between items-center mb-8">
+                        <div>
+                            <h1 class="text-3xl font-bold text-slate-900">Library Catalog</h1>
+                            <p class="text-slate-600 mt-1">Explore our collection of books.</p>
+                        </div>
+                        <div class="mt-4 md:mt-0 flex gap-3">
+                             <div class="relative">
+                                <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                                <input type="text" id="search-books" placeholder="Search title..." class="pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none w-64">
+                            </div>
+                            <button id="btn-seed" class="hidden bg-indigo-100 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-200 transition text-sm font-medium">
+                                <i class="fa-solid fa-database mr-2"></i>Seed Data
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Books Grid -->
+                    <div id="books-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <!-- Loading State -->
+                        <div class="col-span-full text-center py-20">
+                            <i class="fa-solid fa-circle-notch fa-spin text-4xl text-indigo-600 mb-4"></i>
+                            <p class="text-slate-500">Loading library shelf...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Empty State (Hidden by default) -->
+                    <div id="empty-state" class="hidden text-center py-20 bg-white rounded-2xl border border-dashed border-slate-300">
+                        <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-slate-100 mb-4">
+                            <i class="fa-solid fa-book text-2xl text-slate-400"></i>
+                        </div>
+                        <h3 class="text-lg font-medium text-slate-900">No books found</h3>
+                        <p class="text-slate-500 mt-1 mb-6">The library is currently empty.</p>
+                        <button onclick="document.getElementById('btn-seed').click()" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700">
+                            Populate Library
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            setupBookListener();
+            
+            // Search Functionality
+            document.getElementById('search-books').addEventListener('input', (e) => {
+                const term = e.target.value.toLowerCase();
+                renderBooks(books.filter(b => b.title.toLowerCase().includes(term) || b.author.toLowerCase().includes(term)));
+            });
+
+            // Seed Data Logic (Available to all logged in users for demo purposes)
+            const seedBtn = document.getElementById('btn-seed');
+            seedBtn.classList.remove('hidden'); // Show for demo
+            seedBtn.addEventListener('click', seedDatabase);
+        }
+
+        // --- Data Logic ---
+
+        function setupBookListener() {
+            // Use user ID in collection path if possible to separate user data, 
+            // BUT a library system is usually shared. 
+            // We will use a public 'books' collection for the shared library experience.
+            const q = query(collection(db, 'books'));
+            
+            unsubscribeBooks = onSnapshot(q, (snapshot) => {
+                books = [];
+                snapshot.forEach((doc) => {
+                    books.push({ id: doc.id, ...doc.data() });
+                });
+                renderBooks(books);
+            }, (error) => {
+                console.error("Error fetching books:", error);
+                showToast("Error loading library. Check console.", "error");
+            });
+        }
+
+        function renderBooks(booksToRender) {
+            const grid = document.getElementById('books-grid');
+            const emptyState = document.getElementById('empty-state');
+            
+            if (!grid) return;
+
+            if (booksToRender.length === 0) {
+                grid.innerHTML = '';
+                emptyState.classList.remove('hidden');
+                return;
+            } else {
+                emptyState.classList.add('hidden');
+            }
+
+            grid.innerHTML = booksToRender.map(book => {
+                const isBorrowedByMe = book.borrowedBy === currentUser.uid;
+                const isBorrowedByOther = book.borrowedBy && !isBorrowedByMe;
+                
+                let actionBtn = '';
+                let statusBadge = '';
+
+                if (isBorrowedByMe) {
+                    statusBadge = `<span class="bg-indigo-100 text-indigo-800 text-xs font-semibold px-2.5 py-0.5 rounded absolute top-2 right-2">Borrowed by You</span>`;
+                    actionBtn = `
+                        <button onclick="window.returnBook('${book.id}')" class="w-full mt-4 flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-indigo-700 bg-indigo-100 hover:bg-indigo-200 focus:outline-none transition-colors">
+                            Return Book
+                        </button>`;
+                } else if (isBorrowedByOther) {
+                    statusBadge = `<span class="bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded absolute top-2 right-2">Checked Out</span>`;
+                    actionBtn = `
+                        <button disabled class="w-full mt-4 flex items-center justify-center px-4 py-2 border border-slate-200 rounded-md text-sm font-medium text-slate-400 bg-slate-50 cursor-not-allowed">
+                            Unavailable
+                        </button>`;
+                } else {
+                    statusBadge = `<span class="bg-emerald-100 text-emerald-800 text-xs font-semibold px-2.5 py-0.5 rounded absolute top-2 right-2">Available</span>`;
+                    actionBtn = `
+                        <button onclick="window.borrowBook('${book.id}')" class="w-full mt-4 flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none transition-colors shadow-indigo-500/20">
+                            Borrow Now
+                        </button>`;
+                }
+
+                return `
+                <div class="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-300 overflow-hidden border border-slate-200 relative group flex flex-col h-full">
+                    ${statusBadge}
+                    <div class="h-48 overflow-hidden bg-slate-100 relative">
+                        <img src="${book.coverUrl}" alt="${book.title}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" onerror="this.src='https://placehold.co/400x300?text=No+Cover'">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                    </div>
+                    <div class="p-5 flex-grow flex flex-col">
+                        <div class="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">${book.category || 'General'}</div>
+                        <h3 class="text-lg font-bold text-slate-900 leading-tight mb-1">${book.title}</h3>
+                        <p class="text-sm text-slate-500 mb-4">by ${book.author}</p>
+                        
+                        <div class="mt-auto pt-4 border-t border-slate-100">
+                           ${actionBtn}
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        // --- Database Actions ---
+
+        window.borrowBook = async (bookId) => {
+            if (!currentUser) return;
+            try {
+                const bookRef = doc(db, 'books', bookId);
+                await updateDoc(bookRef, {
+                    borrowedBy: currentUser.uid,
+                    borrowedAt: new Date().toISOString()
+                });
+                showToast("Book borrowed successfully!", "success");
+            } catch (e) {
+                console.error(e);
+                showToast("Failed to borrow book.", "error");
+            }
+        };
+
+        window.returnBook = async (bookId) => {
+            if (!currentUser) return;
+            try {
+                const bookRef = doc(db, 'books', bookId);
+                await updateDoc(bookRef, {
+                    borrowedBy: null,
+                    borrowedAt: null
+                });
+                showToast("Book returned. Thank you!", "success");
+            } catch (e) {
+                console.error(e);
+                showToast("Failed to return book.", "error");
+            }
+        };
+
+        const handleLogout = async () => {
+            try {
+                await signOut(auth);
+                showToast("Logged out successfully", "info");
+            } catch (error) {
+                showToast("Error logging out", "error");
+            }
+        };
+
+        const seedDatabase = async () => {
+            const btn = document.getElementById('btn-seed');
+            btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Adding...`;
+            btn.disabled = true;
+
+            const sampleBooks = [
+                { title: "The Great Gatsby", author: "F. Scott Fitzgerald", category: "Classic", coverUrl: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=800", borrowedBy: null },
+                { title: "To Kill a Mockingbird", author: "Harper Lee", category: "Fiction", coverUrl: "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&q=80&w=800", borrowedBy: null },
+                { title: "1984", author: "George Orwell", category: "Dystopian", coverUrl: "https://images.unsplash.com/photo-1535905557558-afc4877a26fc?auto=format&fit=crop&q=80&w=800", borrowedBy: null },
+                { title: "Pride and Prejudice", author: "Jane Austen", category: "Romance", coverUrl: "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?auto=format&fit=crop&q=80&w=800", borrowedBy: null },
+                { title: "The Hobbit", author: "J.R.R. Tolkien", category: "Fantasy", coverUrl: "https://images.unsplash.com/photo-1629198688000-71f23e745b6e?auto=format&fit=crop&q=80&w=800", borrowedBy: null },
+            ];
+
+            try {
+                for (const book of sampleBooks) {
+                    await addDoc(collection(db, 'books'), book);
+                }
+                showToast("Library populated with sample books!", "success");
+            } catch (e) {
+                console.error(e);
+                showToast("Error seeding database: " + e.message, "error");
+            } finally {
+                btn.innerHTML = `<i class="fa-solid fa-database mr-2"></i>Seed Data`;
+                btn.disabled = false;
+            }
+        };
+
+        // --- Toast Notification System ---
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                info: 'bg-slate-800'
+            };
+            
+            const icons = {
+                success: 'fa-check-circle',
+                error: 'fa-exclamation-circle',
+                info: 'fa-info-circle'
+            };
+
+            toast.className = `${colors[type]} text-white px-6 py-4 rounded-lg shadow-xl flex items-center transform transition-all duration-300 translate-y-10 opacity-0`;
+            toast.innerHTML = `
+                <i class="fa-solid ${icons[type]} mr-3 text-lg"></i>
+                <span class="font-medium">${message}</span>
+            `;
+
+            container.appendChild(toast);
+
+            // Animate in
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-y-10', 'opacity-0');
+            });
+
+            // Remove after 3 seconds
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-x-full');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
